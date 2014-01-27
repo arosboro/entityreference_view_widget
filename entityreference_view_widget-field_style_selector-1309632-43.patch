@@ -1,0 +1,165 @@
+diff --git a/entityreference_view_widget.info b/entityreference_view_widget.info
+index f988e3d..3f3dd02 100644
+--- a/entityreference_view_widget.info
++++ b/entityreference_view_widget.info
+@@ -8,3 +8,4 @@ dependencies[] = views
+ 
+ files[] = views/entityreference_view_widget_plugin_display.inc
+ files[] = views/entityreference_view_widget_plugin_exposed_form.inc
++files[] = views/entityreference_view_widget_handler_field_checkbox.inc
+diff --git a/entityreference_view_widget.module b/entityreference_view_widget.module
+index f6190d7..0a846c0 100644
+--- a/entityreference_view_widget.module
++++ b/entityreference_view_widget.module
+@@ -340,12 +340,19 @@ function entityreference_view_widget_field_widget_form(&$form, &$form_state, $fi
+   // displayed through the view.
+   $substitutions = array();
+   $result_entities = $view->query->get_result_entities($view->result);
++  $form_element_type = 'action';
++  if (!empty($view->field['entityreference_view_widget'])
++  && get_class($view->field['entityreference_view_widget']) == 'entityreference_view_widget_handler_field_checkbox') {
++    $options = $view->field['entityreference_view_widget']->options;
++    $form_element_type = $options['ervw']['force_single'] ? 'radio' : 'checkbox';
++  }
+   foreach ($result_entities[1] as $row_id => $entity) {
+     $entity_id = entity_id($entity_type, $entity);
+     if (!$view->display_handler->options['hide_left']) {
+       $element['add'][$entity_id] = array(
+         '#type' => 'checkbox',
+         '#refresh_items' => TRUE,
++        '#return_value' => $entity_id,
+         '#ajax' => array(
+           'path' => 'entityreference_view_widget/ajax/' . $field_name,
+           'wrapper' => 'edit-' . str_replace('_', '-', $field_name),
+@@ -359,15 +366,20 @@ function entityreference_view_widget_field_widget_form(&$form, &$form_state, $fi
+     }
+     else {
+       $element['add'][$entity_id] = array(
+-        '#type' => 'checkbox',
++        '#type' => $form_element_type == 'action' ? 'checkbox' : $form_element_type,
+         '#refresh_items' => TRUE,
++        '#return_value' => $entity_id,
+       );
++      if ($form_element_type == 'radio') {
++        $element['add'][$entity_id]['#parents'] = array($field_name, $field_language, 'add');
++      }
+     }
+     $substitutions[] = array(
+       'placeholder' => '<!--entityreference-view-widget-action-' . $entity_id . '-->',
+       'entity_id' => $entity_id,
+     );
+   }
++  $element['add']['#tree'] = TRUE;
+   $element['#substitutions'] = array(
+     '#type' => 'value',
+     '#value' => $substitutions,
+@@ -382,7 +394,7 @@ function entityreference_view_widget_field_widget_form(&$form, &$form_state, $fi
+ function entityreference_view_widget_preprocess_widget(&$variables) {
+   $form = $variables['form'];
+ 
+-  // Replace the placeholders in the view with actual checkboxes.
++  // Replace the placeholders in the view with actual form elements.
+   $search = array();
+   $replace = array();
+   foreach ($form['#substitutions']['#value'] as $substitution) {
+@@ -478,10 +490,15 @@ function entityreference_view_widget_validate($element, &$form_state) {
+   }
+   // Then new items (marked for addition).
+   if (!empty($element_values['add'])) {
+-    $add = array_filter($element_values['add']);
+-    foreach ($add as $entity_id => $status) {
+-      if (!isset($element_values['items'][$entity_id])) {
+-        $value[] = array('target_type' => $target_type, 'target_id' => $entity_id);
++    if (!is_array($element_values['add'])) {
++      $value[] = array('target_type' => $target_type, 'target_id' => $element_values['add']);
++    }
++    else {
++      $add = array_filter($element_values['add']);
++      foreach ($add as $entity_id => $status) {
++        if (!isset($element_values['items'][$entity_id])) {
++          $value[] = array('target_type' => $target_type, 'target_id' => $entity_id);
++        }
+       }
+     }
+   }
+diff --git a/views/entityreference_view_widget.views.inc b/views/entityreference_view_widget.views.inc
+index 71b4e61..bdeb92d 100644
+--- a/views/entityreference_view_widget.views.inc
++++ b/views/entityreference_view_widget.views.inc
+@@ -43,3 +43,23 @@ function entityreference_view_widget_views_plugins() {
+   );
+   return $plugins;
+ }
++
++/**
++ * Implements hook_views_data_alter().
++ */
++function entityreference_view_widget_views_data_alter(&$data) {
++  foreach (entity_get_info() as $entity_type => $info) {
++    if (isset($info['base table']) && isset($data[$info['base table']]['table'])) {
++      $data[$info['base table']]['entityreference_view_widget'] = array(
++        'title' => t('Entity Reference View Widget checkbox'),
++        'group' => t('Content'),
++        'help' => t('Provide a checkbox to select the row for an entity reference.'),
++        'real field' => $info['entity keys']['id'],
++        'field' => array(
++          'handler' => 'entityreference_view_widget_handler_field_checkbox',
++          'click sortable' => FALSE,
++        ),
++      );
++    }
++  }
++}
+diff --git a/views/entityreference_view_widget_handler_field_checkbox.inc b/views/entityreference_view_widget_handler_field_checkbox.inc
+new file mode 100644
+index 0000000..cadafbf
+--- /dev/null
++++ b/views/entityreference_view_widget_handler_field_checkbox.inc
+@@ -0,0 +1,47 @@
++<?php
++
++/**
++* @file
++* Views field handler. Contains all relevant VBO options and related logic.
++* Implements the Views Form API.
++*/
++
++class entityreference_view_widget_handler_field_checkbox extends views_handler_field {
++  var $revision = FALSE;
++
++  function render($values) {
++    $entity_id = $values->{$this->view->base_field};
++    if (empty($entity_id)) {
++      return;
++    }
++    return '<!--entityreference-view-widget-action-' . $entity_id . '-->';
++  }
++
++  function option_definition() {
++    $options = parent::option_definition();
++    $options['ervw'] = array(
++      'contains' => array(
++        'force_single' => array('default' => FALSE),
++      ),
++    );
++    return $options;
++  }
++
++  function options_form(&$form, &$form_state) {
++    parent::options_form($form, $form_state);
++
++    $form['ervw'] = array(
++      '#type' => 'fieldset',
++      '#title' => t('Entity Reference Views Widget'),
++      '#collapsible' => TRUE,
++      '#collapsed' => FALSE,
++    );
++
++    $form['ervw']['force_single'] = array(
++      '#type' => 'checkbox',
++      '#title' => t('Force single'),
++      '#default_value' => $this->options['ervw']['force_single'],
++      '#description' => t('Check this box to restrict selection to a single value.'),
++    );
++  }
++}
